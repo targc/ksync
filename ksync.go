@@ -35,7 +35,7 @@ type CustomResource struct {
 	DeletedAt                     *time.Time
 }
 
-func (CustomResource) TableName() string { return "custom_resources" }
+func (CustomResource) TableName() string { return "ksync_custom_resources" }
 
 type ChangeCustomResourceAction string
 
@@ -52,7 +52,7 @@ type ChangeCustomResource struct {
 	CreatedAt        time.Time
 }
 
-func (ChangeCustomResource) TableName() string { return "change_custom_resources" }
+func (ChangeCustomResource) TableName() string { return "ksync_change_custom_resources" }
 
 type API struct {
 	DB *gorm.DB

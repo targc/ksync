@@ -30,8 +30,8 @@ func (s *Syncer) sync(ctx context.Context) {
 		WithContext(ctx).
 		Raw(`
 			SELECT DISTINCT ON (c.custom_resource_id) c.*
-			FROM change_custom_resources c
-			JOIN custom_resources r ON r.id = c.custom_resource_id
+			FROM ksync_change_custom_resources c
+			JOIN ksync_custom_resources r ON r.id = c.custom_resource_id
 			WHERE r.cluster = ?
 			ORDER BY c.custom_resource_id, c.id
 			LIMIT 100
