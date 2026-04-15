@@ -1,42 +1,40 @@
 package onelink
 
 import (
-	"context"
+	"encoding/json"
 	"time"
 
 	"github.com/google/uuid"
+	"gorm.io/gorm"
+	"k8s.io/client-go/dynamic"
 )
+
+type IResource = json.RawMessage
 
 type Syncer struct {
 	Cluster      string
 	IntervalSync time.Duration
-}
-
-func (s *Syncer) Run(ctx context.Context) error {
-	return nil
-}
-
-type IResource interface {
-	ToNativeK8sJSON() (string, error)
-	MarshalJSON() ([]byte, error)
-	UnmarshalJSON([]byte) error
+	DB           *gorm.DB
+	K8s          dynamic.Interface
 }
 
 type CustomResource struct {
-	ID                            uuid.UUID // uuid v7
+	ID                            uuid.UUID  `gorm:"type:uuid;primaryKey"`
 	Project                       string
 	Cluster                       string
 	Namespace                     string
 	Kind                          string
 	Name                          string
-	JSON                          IResource
-	SyncingChangeCustomResourceID *uuid.UUID // uuid v7
-	LastChangeCustomResourceID    uuid.UUID  // uuid v7
+	JSON                          IResource  `gorm:"type:jsonb"`
+	SyncingChangeCustomResourceID *uuid.UUID `gorm:"type:uuid"`
+	LastChangeCustomResourceID    uuid.UUID  `gorm:"type:uuid"`
 	LastSyncError                 *string
 	CreatedAt                     time.Time
 	UpdatedAt                     time.Time
 	DeletedAt                     *time.Time
 }
+
+func (CustomResource) TableName() string { return "custom_resources" }
 
 type ChangeCustomResourceAction string
 
@@ -46,14 +44,17 @@ var (
 )
 
 type ChangeCustomResource struct {
-	ID               uuid.UUID // uuid v7
-	CustomResourceID uuid.UUID // uuid v7
-	JSON             IResource // null for action=delete
+	ID               uuid.UUID                  `gorm:"type:uuid;primaryKey"`
+	CustomResourceID uuid.UUID                  `gorm:"type:uuid;index"`
+	JSON             IResource                  `gorm:"type:jsonb"`
 	Action           ChangeCustomResourceAction
 	CreatedAt        time.Time
 }
 
+func (ChangeCustomResource) TableName() string { return "change_custom_resources" }
+
 type API struct {
+	DB *gorm.DB
 }
 
 type ListFilter struct {
@@ -62,20 +63,4 @@ type ListFilter struct {
 	Namespace *string
 	Kind      *string
 	Search    *string
-}
-
-func (a *API) List(ctx context.Context, filter ListFilter, page, limit int64, dest []CustomResource) (int64, error) {
-	return 0, nil
-}
-
-func (a *API) Get(ctx context.Context, id uuid.UUID, dest *CustomResource) error {
-	return nil
-}
-
-func (a *API) Apply(ctx context.Context, customResourceID uuid.UUID, jsn IResource) error {
-	return nil
-}
-
-func (a *API) Remove(ctx context.Context, id uuid.UUID) error {
-	return nil
 }
