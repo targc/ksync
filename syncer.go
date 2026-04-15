@@ -28,10 +28,15 @@ func (s *Syncer) sync(ctx context.Context) {
 	var changes []ChangeCustomResource
 	err := s.DB.
 		WithContext(ctx).
-		Joins("JOIN custom_resources ON custom_resources.id = change_custom_resources.custom_resource_id").
-		Where("custom_resources.cluster = ?", s.Cluster).
-		Order("change_custom_resources.id").
-		Find(&changes).
+		Raw(`
+			SELECT DISTINCT ON (c.custom_resource_id) c.*
+			FROM change_custom_resources c
+			JOIN custom_resources r ON r.id = c.custom_resource_id
+			WHERE r.cluster = ?
+			ORDER BY c.custom_resource_id, c.id
+			LIMIT 100
+		`, s.Cluster).
+		Scan(&changes).
 		Error
 
 	if err != nil {
