@@ -2,6 +2,7 @@ package onelink
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 
 	"github.com/google/uuid"
@@ -61,11 +62,28 @@ func (a *API) Get(ctx context.Context, id uuid.UUID, dest *CustomResource) error
 }
 
 func (a *API) Apply(ctx context.Context, customResourceID uuid.UUID, jsn IResource) error {
-	cr := &CustomResource{ID: customResourceID}
+	var manifest struct {
+		APIVersion string `json:"apiVersion"`
+		Kind       string `json:"kind"`
+		Metadata   struct {
+			Namespace string `json:"namespace"`
+			Name      string `json:"name"`
+		} `json:"metadata"`
+	}
+	json.Unmarshal(jsn, &manifest) //nolint:errcheck
+
+	cr := &CustomResource{
+		ID:         customResourceID,
+		APIVersion: manifest.APIVersion,
+		Kind:       manifest.Kind,
+		Namespace:  manifest.Metadata.Namespace,
+		Name:       manifest.Metadata.Name,
+	}
 
 	err := a.DB.
 		WithContext(ctx).
 		Where("id = ?", customResourceID).
+		Assign(cr).
 		FirstOrCreate(cr).
 		Error
 

@@ -77,9 +77,8 @@ func (s *Syncer) applyChange(ctx context.Context, change ChangeCustomResource) e
 			k8sErr = fmt.Errorf("failed to get custom resource: %w", err)
 			break
 		}
-		if len(cr.JSON) > 0 {
-			k8sErr = s.k8sDelete(ctx, cr.JSON)
-		}
+
+		k8sErr = s.k8sDelete(ctx, cr.APIVersion, cr.Kind, cr.Namespace, cr.Name)
 	}
 
 	if k8sErr != nil {
@@ -153,21 +152,20 @@ func (s *Syncer) k8sApply(ctx context.Context, resource IResource) error {
 	return nil
 }
 
-func (s *Syncer) k8sDelete(ctx context.Context, resource IResource) error {
-	obj := &unstructured.Unstructured{}
-	if err := json.Unmarshal(resource, &obj.Object); err != nil {
-		return fmt.Errorf("failed to unmarshal resource: %w", err)
-	}
-
-	gvr, ns, name, err := parseGVR(obj)
+func (s *Syncer) k8sDelete(ctx context.Context, apiVersion, kind, namespace, name string) error {
+	gv, err := schema.ParseGroupVersion(apiVersion)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to parse apiVersion: %w", err)
 	}
 
-	err = s.K8s.Resource(gvr).Namespace(ns).Delete(ctx, name, metav1.DeleteOptions{})
+	gvr := gv.WithResource(strings.ToLower(kind) + "s")
+
+	err = s.K8s.Resource(gvr).Namespace(namespace).Delete(ctx, name, metav1.DeleteOptions{})
+
 	if err != nil {
 		return fmt.Errorf("failed to delete resource: %w", err)
 	}
+
 	return nil
 }
 

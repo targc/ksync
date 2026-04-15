@@ -22,8 +22,9 @@ type CustomResource struct {
 	ID                            uuid.UUID  `gorm:"type:uuid;primaryKey"`
 	Project                       string
 	Cluster                       string
-	Namespace                     string
+	APIVersion                    string
 	Kind                          string
+	Namespace                     string
 	Name                          string
 	JSON                          IResource  `gorm:"type:jsonb"`
 	SyncingChangeCustomResourceID *uuid.UUID `gorm:"type:uuid"`
