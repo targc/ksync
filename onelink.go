@@ -8,7 +8,8 @@ import (
 )
 
 type Syncer struct {
-	Cluster string
+	Cluster      string
+	IntervalSync time.Duration
 }
 
 func (s *Syncer) Run(ctx context.Context) error {
