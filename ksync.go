@@ -1,4 +1,4 @@
-package onelink
+package ksync
 
 import (
 	"encoding/json"

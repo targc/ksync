@@ -1,4 +1,4 @@
-module github.com/targc/onelink
+module github.com/targc/ksync
 
 go 1.25.0
 

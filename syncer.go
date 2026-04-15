@@ -1,4 +1,4 @@
-package onelink
+package ksync
 
 import (
 	"context"
@@ -143,7 +143,7 @@ func (s *Syncer) k8sApply(ctx context.Context, resource IResource) error {
 	}
 
 	_, err = s.K8s.Resource(gvr).Namespace(ns).Apply(ctx, name, obj, metav1.ApplyOptions{
-		FieldManager: "onelink",
+		FieldManager: "ksync",
 		Force:        true,
 	})
 	if err != nil {
