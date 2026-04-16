@@ -1,6 +1,8 @@
 package apiserver
 
 import (
+	"log/slog"
+
 	"github.com/gofiber/fiber/v3"
 	ksync "github.com/targc/ksync/pkg"
 	"gorm.io/gorm"
@@ -42,6 +44,7 @@ func (s *Server) authMiddleware() fiber.Handler {
 			First(&apiToken).
 			Error
 		if err != nil {
+			slog.Warn("auth failed", "ip", c.IP(), "error", err)
 			return c.Status(fiber.StatusUnauthorized).JSON(errorResponse{Error: "invalid token"})
 		}
 

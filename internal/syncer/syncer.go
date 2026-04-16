@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -36,9 +37,17 @@ func (s *Syncer) Run(ctx context.Context) error {
 }
 
 func (s *Syncer) sync(ctx context.Context) {
+
+	slog.Info("poll syncing...")
+
 	var changes []ksync.SyncChange
 	if err := s.apiGet(ctx, "/api/v1/changes", &changes); err != nil {
+		slog.Error("failed to fetch changes", "error", err)
 		return
+	}
+
+	if len(changes) > 0 {
+		slog.Info("syncing", "changes", len(changes))
 	}
 
 	for _, change := range changes {
@@ -47,7 +56,10 @@ func (s *Syncer) sync(ctx context.Context) {
 }
 
 func (s *Syncer) applyChange(ctx context.Context, change ksync.SyncChange) {
+	log := slog.With("change_id", change.ID, "action", change.Action, "kind", change.CRKind, "name", change.CRName, "namespace", change.CRNamespace)
+
 	if err := s.apiPost(ctx, fmt.Sprintf("/api/v1/changes/%s/syncing", change.ID), nil); err != nil {
+		log.Error("failed to set syncing", "error", err)
 		return
 	}
 
@@ -60,11 +72,17 @@ func (s *Syncer) applyChange(ctx context.Context, change ksync.SyncChange) {
 	}
 
 	if k8sErr != nil {
+		log.Error("k8s apply failed", "error", k8sErr)
 		s.apiPost(ctx, fmt.Sprintf("/api/v1/changes/%s/error", change.ID), map[string]string{"error": k8sErr.Error()}) //nolint:errcheck
 		return
 	}
 
-	s.apiPost(ctx, fmt.Sprintf("/api/v1/changes/%s/success", change.ID), nil) //nolint:errcheck
+	if err := s.apiPost(ctx, fmt.Sprintf("/api/v1/changes/%s/success", change.ID), nil); err != nil {
+		log.Error("failed to report success", "error", err)
+		return
+	}
+
+	log.Info("applied")
 }
 
 func (s *Syncer) apiGet(ctx context.Context, path string, dest interface{}) error {
