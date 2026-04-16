@@ -19,7 +19,7 @@ type Syncer struct {
 }
 
 type CustomResource struct {
-	ID                            uuid.UUID  `gorm:"type:uuid;primaryKey"`
+	ID                            uuid.UUID `gorm:"type:uuid;primaryKey"`
 	Project                       string
 	Cluster                       string
 	APIVersion                    string
@@ -45,16 +45,16 @@ var (
 )
 
 type ChangeCustomResource struct {
-	ID               uuid.UUID                  `gorm:"type:uuid;primaryKey"`
-	CustomResourceID uuid.UUID                  `gorm:"type:uuid;index"`
-	JSON             IResource                  `gorm:"type:jsonb"`
+	ID               uuid.UUID `gorm:"type:uuid;primaryKey"`
+	CustomResourceID uuid.UUID `gorm:"type:uuid;index"`
+	JSON             IResource `gorm:"type:jsonb"`
 	Action           ChangeCustomResourceAction
 	CreatedAt        time.Time
 }
 
 func (ChangeCustomResource) TableName() string { return "ksync_change_custom_resources" }
 
-type API struct {
+type SDK struct {
 	DB *gorm.DB
 }
 

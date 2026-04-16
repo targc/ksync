@@ -8,7 +8,7 @@ import (
 	"github.com/google/uuid"
 )
 
-func (a *API) List(ctx context.Context, filter ListFilter, page, limit int64, dest *[]CustomResource) (int64, error) {
+func (a *SDK) List(ctx context.Context, filter ListFilter, page, limit int64, dest *[]CustomResource) (int64, error) {
 	q := a.DB.WithContext(ctx).Model(&CustomResource{}).Where("deleted_at IS NULL")
 
 	if filter.Project != nil {
@@ -48,7 +48,7 @@ func (a *API) List(ctx context.Context, filter ListFilter, page, limit int64, de
 	return total, nil
 }
 
-func (a *API) Get(ctx context.Context, id uuid.UUID, dest *CustomResource) error {
+func (a *SDK) Get(ctx context.Context, id uuid.UUID, dest *CustomResource) error {
 	err := a.DB.
 		WithContext(ctx).
 		Where("deleted_at IS NULL").
@@ -75,7 +75,7 @@ func parseManifest(jsn IResource) (apiVersion, kind, namespace, name string) {
 	return manifest.APIVersion, manifest.Kind, manifest.Metadata.Namespace, manifest.Metadata.Name
 }
 
-func (a *API) Create(ctx context.Context, customResourceID uuid.UUID, cluster string, jsn IResource) error {
+func (a *SDK) Create(ctx context.Context, customResourceID uuid.UUID, cluster string, jsn IResource) error {
 	apiVersion, kind, namespace, name := parseManifest(jsn)
 
 	cr := &CustomResource{
@@ -115,7 +115,7 @@ func (a *API) Create(ctx context.Context, customResourceID uuid.UUID, cluster st
 	return nil
 }
 
-func (a *API) Update(ctx context.Context, customResourceID uuid.UUID, jsn IResource) error {
+func (a *SDK) Update(ctx context.Context, customResourceID uuid.UUID, jsn IResource) error {
 	change := &ChangeCustomResource{
 		ID:               uuid.New(),
 		CustomResourceID: customResourceID,
@@ -135,7 +135,7 @@ func (a *API) Update(ctx context.Context, customResourceID uuid.UUID, jsn IResou
 	return nil
 }
 
-func (a *API) Remove(ctx context.Context, id uuid.UUID) error {
+func (a *SDK) Remove(ctx context.Context, id uuid.UUID) error {
 	change := &ChangeCustomResource{
 		ID:               uuid.New(),
 		CustomResourceID: id,
