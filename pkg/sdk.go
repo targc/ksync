@@ -90,7 +90,7 @@ func parseManifest(jsn IResource) (apiVersion, kind, namespace, name string, err
 	return manifest.APIVersion, manifest.Kind, manifest.Metadata.Namespace, manifest.Metadata.Name, nil
 }
 
-func (a *SDK) Create(ctx context.Context, customResourceID uuid.UUID, cluster string, jsn IResource) error {
+func (a *SDK) Create(ctx context.Context, customResourceID uuid.UUID, project, cluster string, jsn IResource) error {
 	apiVersion, kind, namespace, name, err := parseManifest(jsn)
 	if err != nil {
 		return err
@@ -101,6 +101,7 @@ func (a *SDK) Create(ctx context.Context, customResourceID uuid.UUID, cluster st
 
 	cr := &CustomResource{
 		ID:         customResourceID,
+		Project:    project,
 		Cluster:    cluster,
 		APIVersion: apiVersion,
 		Kind:       kind,
