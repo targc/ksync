@@ -113,8 +113,13 @@ func (s *Syncer) applyChange(ctx context.Context, change ChangeCustomResource) e
 		"last_change_custom_resource_id":    change.ID,
 		"last_sync_error":                   nil,
 	}
+
 	if change.Action == ChangeCustomResourceActionApply {
 		updates["json"] = change.JSON
+	}
+
+	if change.Action == ChangeCustomResourceActionDelete {
+		updates["deleted_at"] = time.Now()
 	}
 
 	err = s.DB.

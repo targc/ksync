@@ -9,7 +9,7 @@ import (
 )
 
 func (a *API) List(ctx context.Context, filter ListFilter, page, limit int64, dest *[]CustomResource) (int64, error) {
-	q := a.DB.WithContext(ctx).Model(&CustomResource{})
+	q := a.DB.WithContext(ctx).Model(&CustomResource{}).Where("deleted_at IS NULL")
 
 	if filter.Project != nil {
 		q = q.Where("project = ?", *filter.Project)
@@ -51,6 +51,7 @@ func (a *API) List(ctx context.Context, filter ListFilter, page, limit int64, de
 func (a *API) Get(ctx context.Context, id uuid.UUID, dest *CustomResource) error {
 	err := a.DB.
 		WithContext(ctx).
+		Where("deleted_at IS NULL").
 		First(dest, "id = ?", id).
 		Error
 
@@ -61,7 +62,7 @@ func (a *API) Get(ctx context.Context, id uuid.UUID, dest *CustomResource) error
 	return nil
 }
 
-func (a *API) Apply(ctx context.Context, customResourceID uuid.UUID, jsn IResource) error {
+func parseManifest(jsn IResource) (apiVersion, kind, namespace, name string) {
 	var manifest struct {
 		APIVersion string `json:"apiVersion"`
 		Kind       string `json:"kind"`
@@ -71,24 +72,28 @@ func (a *API) Apply(ctx context.Context, customResourceID uuid.UUID, jsn IResour
 		} `json:"metadata"`
 	}
 	json.Unmarshal(jsn, &manifest) //nolint:errcheck
+	return manifest.APIVersion, manifest.Kind, manifest.Metadata.Namespace, manifest.Metadata.Name
+}
+
+func (a *API) Create(ctx context.Context, customResourceID uuid.UUID, cluster string, jsn IResource) error {
+	apiVersion, kind, namespace, name := parseManifest(jsn)
 
 	cr := &CustomResource{
 		ID:         customResourceID,
-		APIVersion: manifest.APIVersion,
-		Kind:       manifest.Kind,
-		Namespace:  manifest.Metadata.Namespace,
-		Name:       manifest.Metadata.Name,
+		Cluster:    cluster,
+		APIVersion: apiVersion,
+		Kind:       kind,
+		Namespace:  namespace,
+		Name:       name,
 	}
 
 	err := a.DB.
 		WithContext(ctx).
-		Where("id = ?", customResourceID).
-		Assign(cr).
-		FirstOrCreate(cr).
+		Create(cr).
 		Error
 
 	if err != nil {
-		return fmt.Errorf("failed to upsert custom resource: %w", err)
+		return fmt.Errorf("failed to create custom resource: %w", err)
 	}
 
 	change := &ChangeCustomResource{
@@ -99,6 +104,26 @@ func (a *API) Apply(ctx context.Context, customResourceID uuid.UUID, jsn IResour
 	}
 
 	err = a.DB.
+		WithContext(ctx).
+		Create(change).
+		Error
+
+	if err != nil {
+		return fmt.Errorf("failed to create change: %w", err)
+	}
+
+	return nil
+}
+
+func (a *API) Update(ctx context.Context, customResourceID uuid.UUID, jsn IResource) error {
+	change := &ChangeCustomResource{
+		ID:               uuid.New(),
+		CustomResourceID: customResourceID,
+		JSON:             jsn,
+		Action:           ChangeCustomResourceActionApply,
+	}
+
+	err := a.DB.
 		WithContext(ctx).
 		Create(change).
 		Error
