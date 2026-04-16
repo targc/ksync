@@ -75,7 +75,7 @@ func (a *SDK) Get(ctx context.Context, id uuid.UUID, dest *CustomResource) error
 	return nil
 }
 
-func parseManifest(jsn IResource) (apiVersion, kind, namespace, name string) {
+func parseManifest(jsn IResource) (apiVersion, kind, namespace, name string, err error) {
 	var manifest struct {
 		APIVersion string `json:"apiVersion"`
 		Kind       string `json:"kind"`
@@ -84,12 +84,20 @@ func parseManifest(jsn IResource) (apiVersion, kind, namespace, name string) {
 			Name      string `json:"name"`
 		} `json:"metadata"`
 	}
-	json.Unmarshal(jsn, &manifest) //nolint:errcheck
-	return manifest.APIVersion, manifest.Kind, manifest.Metadata.Namespace, manifest.Metadata.Name
+	if err := json.Unmarshal(jsn, &manifest); err != nil {
+		return "", "", "", "", fmt.Errorf("failed to parse manifest: %w", err)
+	}
+	return manifest.APIVersion, manifest.Kind, manifest.Metadata.Namespace, manifest.Metadata.Name, nil
 }
 
 func (a *SDK) Create(ctx context.Context, customResourceID uuid.UUID, cluster string, jsn IResource) error {
-	apiVersion, kind, namespace, name := parseManifest(jsn)
+	apiVersion, kind, namespace, name, err := parseManifest(jsn)
+	if err != nil {
+		return err
+	}
+
+	tx := a.DB.WithContext(ctx).Begin()
+	defer tx.Rollback()
 
 	cr := &CustomResource{
 		ID:         customResourceID,
@@ -100,12 +108,7 @@ func (a *SDK) Create(ctx context.Context, customResourceID uuid.UUID, cluster st
 		Name:       name,
 	}
 
-	err := a.DB.
-		WithContext(ctx).
-		Create(cr).
-		Error
-
-	if err != nil {
+	if err := tx.Create(cr).Error; err != nil {
 		return fmt.Errorf("failed to create custom resource: %w", err)
 	}
 
@@ -116,13 +119,12 @@ func (a *SDK) Create(ctx context.Context, customResourceID uuid.UUID, cluster st
 		Action:           ChangeCustomResourceActionApply,
 	}
 
-	err = a.DB.
-		WithContext(ctx).
-		Create(change).
-		Error
-
-	if err != nil {
+	if err := tx.Create(change).Error; err != nil {
 		return fmt.Errorf("failed to create change: %w", err)
+	}
+
+	if err := tx.Commit().Error; err != nil {
+		return fmt.Errorf("failed to commit: %w", err)
 	}
 
 	return nil

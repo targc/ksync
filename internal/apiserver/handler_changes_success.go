@@ -21,10 +21,6 @@ func (s *Server) setSuccess(c fiber.Ctx) error {
 		return c.Status(fiber.StatusNotFound).JSON(errorResponse{Error: "change not found"})
 	}
 
-	if err := s.db.WithContext(c.Context()).Delete(&ksync.ChangeCustomResource{}, "id = ?", id).Error; err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(errorResponse{Error: "failed to delete change"})
-	}
-
 	updates := map[string]interface{}{
 		"syncing_change_custom_resource_id": nil,
 		"last_change_custom_resource_id":    change.ID,
@@ -37,15 +33,22 @@ func (s *Server) setSuccess(c fiber.Ctx) error {
 		updates["deleted_at"] = time.Now()
 	}
 
-	err = s.db.
-		WithContext(c.Context()).
-		Model(&ksync.CustomResource{}).
+	tx := s.db.WithContext(c.Context()).Begin()
+	defer tx.Rollback()
+
+	if err := tx.Delete(&ksync.ChangeCustomResource{}, "id = ?", id).Error; err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(errorResponse{Error: "failed to delete change"})
+	}
+
+	if err := tx.Model(&ksync.CustomResource{}).
 		Where("id = ? AND cluster = ?", change.CustomResourceID, cluster).
 		Updates(updates).
-		Error
-
-	if err != nil {
+		Error; err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(errorResponse{Error: "failed to update resource"})
+	}
+
+	if err := tx.Commit().Error; err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(errorResponse{Error: "failed to commit"})
 	}
 
 	return c.SendStatus(fiber.StatusOK)
