@@ -7,11 +7,11 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
-	"strings"
 	"time"
 
 	ksync "github.com/targc/ksync/pkg"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/dynamic"
@@ -22,6 +22,7 @@ type Syncer struct {
 	APIToken     string
 	IntervalSync time.Duration
 	K8s          dynamic.Interface
+	Mapper       meta.RESTMapper
 }
 
 func (s *Syncer) Run(ctx context.Context) error {
@@ -143,12 +144,12 @@ func (s *Syncer) k8sApply(ctx context.Context, resource ksync.IResource) error {
 		return fmt.Errorf("failed to unmarshal resource: %w", err)
 	}
 
-	gvr, ns, name, err := parseGVR(obj)
+	gvr, err := s.resolveGVR(obj.GetAPIVersion(), obj.GetKind())
 	if err != nil {
 		return err
 	}
 
-	_, err = s.K8s.Resource(gvr).Namespace(ns).Apply(ctx, name, obj, metav1.ApplyOptions{
+	_, err = s.K8s.Resource(gvr).Namespace(obj.GetNamespace()).Apply(ctx, obj.GetName(), obj, metav1.ApplyOptions{
 		FieldManager: "ksync",
 		Force:        true,
 	})
@@ -159,12 +160,10 @@ func (s *Syncer) k8sApply(ctx context.Context, resource ksync.IResource) error {
 }
 
 func (s *Syncer) k8sDelete(ctx context.Context, apiVersion, kind, namespace, name string) error {
-	gv, err := schema.ParseGroupVersion(apiVersion)
+	gvr, err := s.resolveGVR(apiVersion, kind)
 	if err != nil {
-		return fmt.Errorf("failed to parse apiVersion: %w", err)
+		return err
 	}
-
-	gvr := gv.WithResource(strings.ToLower(kind) + "s")
 
 	err = s.K8s.Resource(gvr).Namespace(namespace).Delete(ctx, name, metav1.DeleteOptions{})
 	if err != nil {
@@ -174,11 +173,16 @@ func (s *Syncer) k8sDelete(ctx context.Context, apiVersion, kind, namespace, nam
 	return nil
 }
 
-func parseGVR(obj *unstructured.Unstructured) (schema.GroupVersionResource, string, string, error) {
-	gv, err := schema.ParseGroupVersion(obj.GetAPIVersion())
+func (s *Syncer) resolveGVR(apiVersion, kind string) (schema.GroupVersionResource, error) {
+	gv, err := schema.ParseGroupVersion(apiVersion)
 	if err != nil {
-		return schema.GroupVersionResource{}, "", "", fmt.Errorf("failed to parse apiVersion: %w", err)
+		return schema.GroupVersionResource{}, fmt.Errorf("failed to parse apiVersion: %w", err)
 	}
-	resource := strings.ToLower(obj.GetKind()) + "s"
-	return gv.WithResource(resource), obj.GetNamespace(), obj.GetName(), nil
+
+	mapping, err := s.Mapper.RESTMapping(schema.GroupKind{Group: gv.Group, Kind: kind}, gv.Version)
+	if err != nil {
+		return schema.GroupVersionResource{}, fmt.Errorf("failed to get REST mapping for %s/%s: %w", apiVersion, kind, err)
+	}
+
+	return mapping.Resource, nil
 }
