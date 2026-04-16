@@ -6,7 +6,20 @@ import (
 	"fmt"
 
 	"github.com/google/uuid"
+	"gorm.io/gorm"
 )
+
+type ListFilter struct {
+	Project   *string
+	Cluster   *string
+	Namespace *string
+	Kind      *string
+	Search    *string
+}
+
+type SDK struct {
+	DB *gorm.DB
+}
 
 func (a *SDK) List(ctx context.Context, filter ListFilter, page, limit int64, dest *[]CustomResource) (int64, error) {
 	q := a.DB.WithContext(ctx).Model(&CustomResource{}).Where("deleted_at IS NULL")

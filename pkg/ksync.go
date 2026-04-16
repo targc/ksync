@@ -5,17 +5,26 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"gorm.io/gorm"
-	"k8s.io/client-go/dynamic"
 )
 
 type IResource = json.RawMessage
 
-type Syncer struct {
-	Cluster      string
-	IntervalSync time.Duration
-	DB           *gorm.DB
-	K8s          dynamic.Interface
+type ApiToken struct {
+	ID        uuid.UUID `gorm:"type:uuid;primaryKey"`
+	Token     string
+	Cluster   string
+	CreatedAt time.Time
+}
+
+func (ApiToken) TableName() string { return "ksync_api_tokens" }
+
+// SyncChange is returned by GET /changes — extends ChangeCustomResource with CR identity fields needed for delete.
+type SyncChange struct {
+	ChangeCustomResource
+	CRAPIVersion string `gorm:"column:cr_api_version" json:"cr_api_version"`
+	CRKind       string `gorm:"column:cr_kind"        json:"cr_kind"`
+	CRNamespace  string `gorm:"column:cr_namespace"   json:"cr_namespace"`
+	CRName       string `gorm:"column:cr_name"        json:"cr_name"`
 }
 
 type CustomResource struct {
@@ -53,15 +62,3 @@ type ChangeCustomResource struct {
 }
 
 func (ChangeCustomResource) TableName() string { return "ksync_change_custom_resources" }
-
-type SDK struct {
-	DB *gorm.DB
-}
-
-type ListFilter struct {
-	Project   *string
-	Cluster   *string
-	Namespace *string
-	Kind      *string
-	Search    *string
-}
