@@ -1,98 +1,128 @@
 # ksync
 
-Go library for syncing Kubernetes custom resources via a PostgreSQL-backed change log.
+Sync Kubernetes custom resources via a PostgreSQL-backed change log.
 
-Callers write desired state through `API`. A `Syncer` polls the DB and drives changes into k8s using Server-Side Apply.
+Callers write desired state through the `SDK`. An HTTP API server sits in front of the DB. `Syncer` binaries — one per cluster — poll the API and drive changes into k8s using Server-Side Apply.
 
 ## How it works
 
 ```
-Your app          PostgreSQL                  Kubernetes
-   │                   │                          │
-   ├── Apply() ────────► INSERT change row         │
-   │                   │                          │
-   │              Syncer polls                    │
-   │                   ├── read oldest change ────► SSA apply / delete
-   │                   │              ◄────────── ok
-   │                   ├── DELETE change row       │
-   │                   └── UPDATE cr state         │
+Your app        PostgreSQL        cmd/api (HTTP)       cmd/syncer        k8s
+   │                │                   │                   │              │
+   ├─ SDK.Create ──►│                   │                   │              │
+   │                │                   │                   │              │
+   │                │              Syncer polls             │              │
+   │                │◄──── GET /changes ─────────────────── │              │
+   │                │─── []SyncChange ──────────────────── ►│              │
+   │                │                   │                   ├─ SSA apply ─►│
+   │                │                   │                   │◄──── ok ─────┤
+   │                │◄─ POST /success ──────────────────────│              │
+   │                │  DELETE change row│                   │              │
+   │                │  UPDATE cr state  │                   │              │
 ```
 
-- Changes are append-only. A failed sync leaves the row in place and retries on the next poll.
-- One `Syncer` per cluster, all sharing the same DB, each filtered by `cluster`.
+- Failed syncs leave the change row in place — retried on the next poll.
+- One Syncer per cluster, each authenticated with a per-cluster API token.
+- Syncers never touch the DB directly.
 
-## Install
+## Packages
+
+| Import path | Description |
+|---|---|
+| `github.com/targc/ksync/pkg` | Public library — `SDK`, models, `ListFilter` |
+| `github.com/targc/ksync/internal/apiserver` | Fiber HTTP server (internal) |
+| `github.com/targc/ksync/internal/syncer` | Syncer HTTP client + k8s ops (internal) |
+
+## Setup
+
+### 1. Run migrations
 
 ```sh
-go get github.com/targc/ksync
+DATABASE_URL=postgres://... go run ./cmd/migrate
 ```
 
-Requires PostgreSQL. Run the migration:
+### 2. Start the API server
 
 ```sh
-psql $DATABASE_URL -f migrations/00001.sql
+DATABASE_URL=postgres://... PORT=8080 go run ./cmd/api
 ```
 
-## Usage
+### 3. Create an API token
+
+```sql
+INSERT INTO ksync_api_tokens (id, token, cluster)
+VALUES (gen_random_uuid(), 'my-secret-token', 'prod');
+```
+
+### 4. Start a Syncer
+
+```sh
+API_URL=http://localhost:8080 \
+API_TOKEN=my-secret-token \
+INTERVAL_SYNC=5s \
+KUBECONFIG=~/.kube/config \
+go run ./cmd/syncer
+```
+
+## SDK Usage
 
 ```go
-import "github.com/targc/ksync"
+import ksync "github.com/targc/ksync/pkg"
 
-api := &ksync.API{DB: db}
+sdk := &ksync.SDK{DB: db}
 
-// Apply a manifest
-err := api.Apply(ctx, resourceID, json.RawMessage(`{
+// Create a resource and enqueue an apply
+err := sdk.Create(ctx, resourceID, "prod", json.RawMessage(`{
     "apiVersion": "apps/v1",
     "kind": "Deployment",
     "metadata": {"namespace": "default", "name": "my-app"},
     "spec": { ... }
 }`))
 
+// Update (enqueues another apply)
+err = sdk.Update(ctx, resourceID, newJSON)
+
 // Delete
-err = api.Remove(ctx, resourceID)
+err = sdk.Remove(ctx, resourceID)
 
 // List
 var crs []ksync.CustomResource
-total, err := api.List(ctx, ksync.ListFilter{
+total, err := sdk.List(ctx, ksync.ListFilter{
     Cluster: ptr("prod"),
     Kind:    ptr("Deployment"),
 }, 1, 20, &crs)
 
-// Start syncer (blocking — run in a goroutine or with context cancellation)
-syncer := &ksync.Syncer{
-    Cluster:      "prod",
-    IntervalSync: 5 * time.Second,
-    DB:           db,
-    K8s:          k8sClient, // dynamic.Interface
-}
-syncer.Run(ctx)
+// Get
+var cr ksync.CustomResource
+err = sdk.Get(ctx, resourceID, &cr)
 ```
 
-## API
+## Docker
 
-| Method | Description |
-|---|---|
-| `Apply(ctx, id, json)` | Upsert a resource and enqueue an apply change |
-| `Remove(ctx, id)` | Enqueue a delete change |
-| `Get(ctx, id, dest)` | Fetch a resource by ID |
-| `List(ctx, filter, page, limit, dest)` | List resources with optional filters |
+Images are published to GitHub Container Registry on every push to `main`:
 
-`ListFilter` fields: `Project`, `Cluster`, `Namespace`, `Kind`, `Search` (name substring).
-
-## Multi-cluster
-
-Run one `Syncer` per cluster:
-
-```go
-for _, cluster := range clusters {
-    go (&ksync.Syncer{
-        Cluster:      cluster.Name,
-        IntervalSync: 10 * time.Second,
-        DB:           db,
-        K8s:          cluster.Client,
-    }).Run(ctx)
-}
 ```
+ghcr.io/<owner>/ksync-api:latest
+ghcr.io/<owner>/ksync-syncer:latest
+```
+
+Build locally:
+
+```sh
+docker build -f Dockerfile.api    -t ksync-api    .
+docker build -f Dockerfile.syncer -t ksync-syncer .
+```
+
+## HTTP API
+
+All routes require `Authorization: Bearer <token>`.
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/api/v1/changes` | Oldest pending change per resource (max 100) |
+| `POST` | `/api/v1/changes/:id/syncing` | Mark change as in-flight |
+| `POST` | `/api/v1/changes/:id/success` | Confirm applied — deletes change row, updates CR |
+| `POST` | `/api/v1/changes/:id/error` | Report failure — clears lock, sets error |
 
 ## License
 

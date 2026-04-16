@@ -1,142 +1,65 @@
 # ksync
 
-Go library for syncing Kubernetes custom resources via a DB-backed change-log.
-Callers write changes through `API`; `Syncer` polls and drives them into k8s.
+Go library + HTTP API for syncing Kubernetes custom resources via a DB-backed change log.
+Callers write changes through `SDK`; a `Syncer` binary polls the HTTP API and drives them into k8s.
 
 ---
 
 ## Direction
 
-ksync exists to decouple **intent** (what k8s state should exist) from **execution** (actually calling the k8s API).
+ksync decouples **intent** (what k8s state should exist) from **execution** (actually calling the k8s API).
 
-The core bet is: **the database is the source of truth, not k8s**. Callers never talk to k8s directly. They write a desired manifest into the DB, and ksync eventually reconciles k8s to match. This gives you:
+**The database is the source of truth, not k8s.** Callers never talk to k8s directly. They write a desired manifest into the DB via `SDK`, and the `Syncer` eventually reconciles k8s to match.
 
 - **Audit log** — every change is a row before it's applied
 - **Retry for free** — failed changes stay in the table and get retried on the next poll
-- **Multi-cluster fan-out** — run one `Syncer` per cluster, all reading from the same DB, each filtered by `cluster`
+- **Multi-cluster fan-out** — one Syncer per cluster, each authenticated with its own API token
 - **Decoupled availability** — callers succeed even when k8s is temporarily unreachable
+- **Untrusted syncers** — syncers run in partner clusters and talk to the HTTP API; they never touch the DB directly
 
-The intended evolution path:
-1. Now: single-process library, caller embeds `API` and `Syncer`
-2. Next: expose `API` over HTTP/gRPC so multiple services can write changes
-3. Later: replace polling with DB LISTEN/NOTIFY or a queue for lower latency
-
----
-
-## Concepts
-
-### Change Log
-Every mutation is recorded as a `ChangeCustomResource` row before anything touches k8s.
-The syncer processes the oldest pending change per resource, applies it, then deletes the row.
-If k8s fails, the row stays — next poll retries automatically.
-
-```
-Caller            DB                        k8s
-  │                │                          │
-  ├─ Apply() ─────►│ INSERT change row         │
-  │                │                          │
-  │           Syncer polls...                 │
-  │                │                          │
-  │                ├─ read oldest change ─────►│ SSA apply/delete
-  │                │          ◄───────────────┤ ok
-  │                ├─ DELETE change row        │
-  │                ├─ UPDATE cr.json           │
-```
-
-### Intent vs State
-`CustomResource.JSON` is the **last successfully synced manifest** — what k8s currently has (as far as we know).
-`ChangeCustomResource.JSON` is the **desired manifest** — what the caller wants k8s to have.
-They diverge between the time a change is written and the time the syncer processes it.
-
-```
-┌─────────────────────────────────────────────┐
-│ custom_resources                            │
-│                                             │
-│  json ──────────► "what k8s has now"        │
-│                   (updated after sync)      │
-└─────────────────────────────────────────────┘
-
-┌─────────────────────────────────────────────┐
-│ change_custom_resources                     │
-│                                             │
-│  json ──────────► "what caller wants"       │
-│                   (deleted after sync)      │
-└─────────────────────────────────────────────┘
-```
-
-### One Change Per Resource Per Cycle
-The SQL query uses `DISTINCT ON (custom_resource_id) ORDER BY id` — this picks the **oldest** pending change per resource. Newer changes for the same resource are queued behind it.
-
-This means rapid updates to one resource do not starve other resources. Each resource gets exactly one attempt per sync cycle.
-
-### Soft Lock
-`syncing_change_custom_resource_id` marks which change is in-flight. It is **advisory only** — not checked before processing, just written for observability. After a crash it stays set until overwritten on the next cycle. Safe to ignore for correctness, useful for debugging stuck resources.
-
-### Identity Fields
-`api_version`, `kind`, `namespace`, `name` are stored as columns on `custom_resources` so the syncer can delete a resource without loading and parsing its JSON. These are kept up to date by `Apply` on every call via `Assign(...).FirstOrCreate`.
-
-### Server-Side Apply
-All apply operations use SSA (`Force: true`, `FieldManager: "ksync"`). This means:
-- ksync owns the fields it manages; conflicts with other managers are force-resolved
-- Callers send full manifests — ksync does not diff or patch
-- k8s handles idempotency — applying the same manifest twice is safe
+Evolution path:
+1. ~~Single-process library~~ (done)
+2. ~~HTTP API decoupling~~ (done — `cmd/api` + token auth)
+3. Next: replace polling with DB LISTEN/NOTIFY or a queue for lower latency
 
 ---
 
-## Architecture Diagram
+## Architecture
 
 ```
-┌──────────────────────────────────────────────────────────────────┐
-│                        Your Application                          │
-│                                                                  │
-│   ksync.API                                                      │
-│   ├── Apply(id, json)  ─────────────────────────────────────┐   │
-│   ├── Remove(id)       ─────────────────────────────────────┤   │
-│   ├── List(filter)     ◄── reads custom_resources           │   │
-│   └── Get(id)          ◄── reads custom_resources           │   │
-└────────────────────────────────────────────────────────────────┬─┘
-                                                                 │
-                              ┌──────────────────────────────────▼───┐
-                              │           PostgreSQL                  │
-                              │                                       │
-                              │  custom_resources                     │
-                              │  ┌────────────────────────────────┐  │
-                              │  │ id | cluster | kind | name ... │  │
-                              │  │ id | cluster | kind | name ... │  │
-                              │  └────────────────────────────────┘  │
-                              │                                       │
-                              │  change_custom_resources              │
-                              │  ┌────────────────────────────────┐  │
-                              │  │ id | cr_id | action | json     │  │
-                              │  │ id | cr_id | action | json     │  │
-                              │  └────────────────────────────────┘  │
-                              └──────────┬────────────────────────────┘
-                                         │ poll every IntervalSync
-                              ┌──────────▼────────────────────────────┐
-                              │           ksync.Syncer                │
-                              │   cluster = "prod"                    │
-                              │                                       │
-                              │   sync()                              │
-                              │   └─ oldest change per resource       │
-                              │        ├─ apply  → k8sApply (SSA)     │
-                              │        └─ delete → k8sDelete          │
-                              └──────────┬────────────────────────────┘
-                                         │
-                              ┌──────────▼────────────────────────────┐
-                              │        Kubernetes (dynamic client)    │
-                              │                                       │
-                              │   cluster: prod                       │
-                              │   Resources: Deployment, Service ...  │
-                              └───────────────────────────────────────┘
+Your Application
+│
+├── SDK.Create / Update / Remove
+│        │
+│        ▼
+│   PostgreSQL
+│   ├── ksync_custom_resources
+│   ├── ksync_change_custom_resources
+│   └── ksync_api_tokens
+│        │
+│        │  HTTP (Bearer token)
+│        ▼
+│   cmd/api  (Fiber HTTP server)
+│   GET  /api/v1/changes
+│   POST /api/v1/changes/:id/syncing
+│   POST /api/v1/changes/:id/success
+│   POST /api/v1/changes/:id/error
+│        │
+│        ▼
+│   cmd/syncer  (one per cluster)
+│   └── polls changes → applies to k8s via SSA
+│        │
+│        ▼
+│   Kubernetes (dynamic client, SSA)
 ```
 
-### Multi-cluster setup
+### Multi-cluster
 
-Run one `Syncer` per cluster. All syncers share the same DB; each filters by `cluster`.
+One Syncer binary per cluster. Each has its own API token row (`ksync_api_tokens`) that maps token → cluster. All write through the same API server and DB.
 
 ```
                     ┌─────────────┐
-                    │  PostgreSQL │
+                    │  cmd/api    │
                     └──────┬──────┘
            ┌───────────────┼───────────────┐
            │               │               │
@@ -150,39 +73,42 @@ Run one `Syncer` per cluster. All syncers share the same DB; each filters by `cl
 
 ---
 
-## applyChange State Machine
+## Concepts
+
+### Change Log
+Every mutation is a `ksync_change_custom_resources` row. The syncer processes the oldest pending change per resource, applies it to k8s via the HTTP API success/error endpoints, which then delete the row. If k8s fails, the row stays — next poll retries.
+
+### Intent vs State
+- `CustomResource.JSON` — last successfully synced manifest (what k8s has)
+- `ChangeCustomResource.JSON` — desired manifest (what caller wants)
+
+### One Change Per Resource Per Cycle
+`DISTINCT ON (custom_resource_id) ORDER BY id` picks the oldest pending change per resource. Newer changes queue behind it.
+
+### Soft Lock
+`syncing_change_custom_resource_id` marks the in-flight change — advisory only, not checked before processing. Overwritten on next cycle after a crash.
+
+### Server-Side Apply
+All applies use SSA (`FieldManager: "ksync"`, `Force: true`). Callers send full manifests; ksync does not diff or patch.
+
+---
+
+## applyChange State Machine (via HTTP)
 
 ```
-                    ┌─────────────────────┐
-                    │  change row exists  │
-                    └──────────┬──────────┘
-                               │
-                    ┌──────────▼──────────┐
-                    │  set syncing_id     │  ← soft lock
-                    └──────────┬──────────┘
-                               │
-              ┌────────────────┴─────────────────┐
-              │ action=apply                      │ action=delete
-              ▼                                   ▼
-    ┌─────────────────┐               ┌───────────────────────┐
-    │  k8sApply(json) │               │  fetch CR identity    │
-    │  (SSA)          │               │  k8sDelete(av,k,ns,n) │
-    └────────┬────────┘               └──────────┬────────────┘
-             │                                   │
-             └─────────────┬─────────────────────┘
-                           │
-              ┌────────────┴──────────────┐
-              │ k8s error?                │
-              │                           │
-         YES  ▼                      NO   ▼
-    ┌──────────────────┐      ┌──────────────────────────┐
-    │ clear lock       │      │ DELETE change row         │
-    │ write sync_error │      │ UPDATE cr:                │
-    │ return error     │      │   json (if apply)         │
-    │ (row stays,      │      │   last_change_id          │
-    │  retried next    │      │   clear sync_error        │
-    │  poll)           │      │   clear lock              │
-    └──────────────────┘      └──────────────────────────┘
+Syncer                          API Server                  k8s
+  │                                  │                        │
+  ├─ GET /changes ──────────────────►│                        │
+  │ ◄─────────────── []SyncChange ───┤                        │
+  │                                  │                        │
+  ├─ POST /changes/:id/syncing ─────►│ set syncing lock       │
+  │                                  │                        │
+  ├─ k8sApply / k8sDelete ──────────────────────────────────►│
+  │ ◄──────────────────────────────────────── ok / error ─────┤
+  │                                  │                        │
+  ├─ POST /changes/:id/success ─────►│ DELETE change row      │
+  │   OR                             │ UPDATE cr state        │
+  └─ POST /changes/:id/error ───────►│ clear lock, set error  │
 ```
 
 ---
@@ -191,153 +117,170 @@ Run one `Syncer` per cluster. All syncers share the same DB; each filters by `cl
 
 ```
 module  github.com/targc/ksync
-package ksync
 go      1.25
 ```
 
-Key deps: `gorm.io/gorm`, `k8s.io/client-go/dynamic`, `k8s.io/apimachinery`, `github.com/google/uuid`
+Key deps: `gorm.io/gorm`, `github.com/gofiber/fiber/v3`, `k8s.io/client-go/dynamic`, `k8s.io/apimachinery`, `github.com/google/uuid`
 
 ---
 
-## Files
+## File Structure
 
-| File | Responsibility |
-|---|---|
-| `ksync.go` | All types and structs |
-| `api.go` | `API` methods — CRUD + change enqueue |
-| `syncer.go` | Poll loop, k8s apply/delete, GVR helpers |
+```
+ksync/
+├── pkg/                          # public library (package ksync)
+│   ├── ksync.go                  # all types and models
+│   └── sdk.go                    # SDK methods — DB CRUD + change enqueue
+├── internal/
+│   ├── apiserver/                # Fiber HTTP server (package apiserver)
+│   │   ├── server.go             # Server, SetupRoutes, authMiddleware
+│   │   ├── handler_changes_list.go
+│   │   ├── handler_changes_syncing.go
+│   │   ├── handler_changes_success.go
+│   │   └── handler_changes_error.go
+│   └── syncer/                   # Syncer HTTP client + k8s ops (package syncer)
+│       └── syncer.go
+├── cmd/
+│   ├── api/main.go               # API server binary
+│   ├── syncer/main.go            # Syncer binary
+│   └── migrate/main.go           # DB migration runner
+├── migrations/
+│   ├── 00001.sql                 # custom_resources + change_custom_resources
+│   └── 00002.sql                 # ksync_api_tokens
+├── Dockerfile.api
+├── Dockerfile.syncer
+└── .github/workflows/ci.yml
+```
 
 ---
 
-## Types
+## Types (`pkg/ksync.go`)
 
-### `CustomResource` → table `custom_resources`
+### `CustomResource` → table `ksync_custom_resources`
 
 | Column | Notes |
 |---|---|
 | `id` uuid PK | caller-assigned, stable across updates |
 | `project`, `cluster` | routing/filtering |
-| `api_version`, `kind`, `namespace`, `name` | identity — populated from JSON on every `Apply`, used for delete without re-parsing JSON |
+| `api_version`, `kind`, `namespace`, `name` | identity — populated from JSON on every Create/Update |
 | `json` jsonb | last successfully synced manifest |
-| `syncing_change_custom_resource_id` | set to the in-flight change ID as a soft lock |
+| `syncing_change_custom_resource_id` | soft lock: set to in-flight change ID |
 | `last_change_custom_resource_id` | ID of last successfully applied change |
 | `last_sync_error` | cleared on success, set on k8s error |
 | `deleted_at` | soft-delete |
 
-### `ChangeCustomResource` → table `change_custom_resources`
+### `ChangeCustomResource` → table `ksync_change_custom_resources`
 
 Append-only log. Rows are deleted after successful sync.
 
 | Field | Notes |
 |---|---|
 | `id` uuid PK | |
-| `custom_resource_id` | FK to `custom_resources`, indexed |
+| `custom_resource_id` | FK to `ksync_custom_resources`, indexed |
 | `json` jsonb | full manifest for `apply`; empty for `delete` |
 | `action` | `"apply"` or `"delete"` |
 
-### `Syncer`
+### `ApiToken` → table `ksync_api_tokens`
+
+| Field | Notes |
+|---|---|
+| `id` uuid PK | |
+| `token` | unique bearer token |
+| `cluster` | cluster name this token grants access to |
+
+### `SyncChange`
+
+Response type for `GET /changes`. Embeds `ChangeCustomResource` plus CR identity fields (`CRAPIVersion`, `CRKind`, `CRNamespace`, `CRName`) so the syncer can call k8sDelete without re-fetching the DB.
+
+### `SDK`
+
+```go
+SDK{DB: *gorm.DB}
+```
+
+---
+
+## SDK Methods (`pkg/sdk.go`)
+
+| Method | Description |
+|---|---|
+| `Create(ctx, id, cluster, json)` | Insert CR + enqueue apply change |
+| `Update(ctx, id, json)` | Enqueue apply change for existing CR |
+| `Remove(ctx, id)` | Enqueue delete change |
+| `Get(ctx, id, dest)` | Fetch CR by ID |
+| `List(ctx, filter, page, limit, dest)` | List CRs with filters |
+
+`ListFilter` fields: `Project`, `Cluster`, `Namespace`, `Kind`, `Search` (name ILIKE).
+
+---
+
+## HTTP API Routes (`internal/apiserver/`)
+
+All routes require `Authorization: Bearer <token>`. Token is looked up in `ksync_api_tokens`; the matching `cluster` is injected via `c.Locals`.
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/api/v1/changes` | Oldest pending change per resource for this cluster (max 100) |
+| `POST` | `/api/v1/changes/:id/syncing` | Set soft lock on the CR |
+| `POST` | `/api/v1/changes/:id/success` | Delete change row, update CR state |
+| `POST` | `/api/v1/changes/:id/error` | Clear lock, set `last_sync_error` |
+
+### `POST /changes/:id/success` behaviour
+- Deletes the change row
+- If `action=apply`: sets `cr.json = change.json`
+- If `action=delete`: sets `cr.deleted_at = now()`
+- Always: clears `syncing_change_custom_resource_id`, sets `last_change_custom_resource_id`, clears `last_sync_error`
+
+---
+
+## Syncer (`internal/syncer/syncer.go`)
 
 ```go
 Syncer{
-    Cluster      string           // filters which CRs to process
-    IntervalSync time.Duration    // poll cadence
-    DB           *gorm.DB
+    APIURL       string
+    APIToken     string
+    IntervalSync time.Duration
     K8s          dynamic.Interface
 }
 ```
 
-### `API`
+No DB access. Polls `GET /changes`, applies each change to k8s, reports success or error via HTTP.
 
-```go
-API{DB: *gorm.DB}
-```
-
----
-
-## API Methods
-
-### `Apply(ctx, customResourceID, jsn)`
-- Parses `apiVersion`, `kind`, `metadata.namespace`, `metadata.name` from JSON
-- Upserts `CustomResource` with `Assign(...).FirstOrCreate` — identity fields always updated
-- Appends `ChangeCustomResource{action: "apply", json: jsn}`
-
-### `Remove(ctx, id)`
-- Appends `ChangeCustomResource{action: "delete", json: nil}`
-- Does **not** delete the `CustomResource` row
-
-### `List(ctx, filter, page, limit, dest)`
-- Filters: `project`, `cluster`, `namespace`, `kind`, `search` (name ILIKE)
-- 1-based pagination
-
-### `Get(ctx, id, dest)`
-- Fetches by `id`
+### k8s Integration
+- `k8sApply` — SSA via `dynamic.Resource(gvr).Namespace(ns).Apply(...)`
+- `k8sDelete` — `dynamic.Resource(gvr).Namespace(ns).Delete(...)`
+- `parseGVR` — naive `strings.ToLower(kind) + "s"` pluralization
 
 ---
 
-## k8s Integration
+## env Config
 
-### `k8sApply`
-- Unmarshals full JSON into `unstructured.Unstructured`
-- Uses Server-Side Apply (`FieldManager: "ksync"`, `Force: true`)
+### `cmd/api`
+| Var | Default | Notes |
+|---|---|---|
+| `DATABASE_URL` | required | PostgreSQL DSN |
+| `PORT` | `8080` | |
 
-### `k8sDelete`
-- Takes explicit string params — no JSON unmarshal
-- Derives GVR: `strings.ToLower(kind) + "s"` (naive pluralization)
-- Calls `dynamic.Resource(gvr).Namespace(ns).Delete(...)`
+### `cmd/syncer`
+| Var | Default | Notes |
+|---|---|---|
+| `API_URL` | required | Base URL of `cmd/api` |
+| `API_TOKEN` | required | Token from `ksync_api_tokens` |
+| `INTERVAL_SYNC` | `5s` | Poll cadence (Go duration string) |
+| `KUBECONFIG` | — | Falls back to in-cluster config |
 
-### `parseGVR(obj)`
-- Used only by `k8sApply`
-- Returns `(GroupVersionResource, namespace, name, error)`
-
----
-
-## Known Limitations / Things to Watch
-
-- **Naive pluralization** — `kind + "s"` breaks for irregular plurals (e.g. `Ingress` → `ingresss`). Fix: use a discovery client or a lookup table.
-- **No cluster-level resource support** — `k8sDelete` always calls `.Namespace(namespace)`. For cluster-scoped resources pass `""` as namespace (works with the dynamic client, just ensure callers set it correctly).
-- **No soft-delete** — `Remove` enqueues a delete change but the `CustomResource` row remains with `DeletedAt = nil`.
-- **Soft lock is advisory** — `syncing_change_custom_resource_id` is set but not checked before processing. A crash mid-sync leaves it set; overwritten on next poll.
-- **Batch size fixed at 100** — hardcoded in the raw SQL. Make `Syncer.BatchSize` configurable if needed.
-- **Sequential processing** — changes are applied one by one. Parallelise with a worker pool if throughput matters.
-- **`json.Unmarshal` error ignored in `Apply`** — malformed JSON results in empty identity fields, CR still upserted.
-- **DB is PostgreSQL-specific** — uses `DISTINCT ON` and `ILIKE`.
+### `cmd/migrate`
+| Var | Notes |
+|---|---|
+| `DATABASE_URL` | PostgreSQL DSN |
 
 ---
 
-## DB Migration Notes
+## Known Limitations
 
-Adding `api_version` column (added Apr 2026):
-
-```sql
-ALTER TABLE custom_resources ADD COLUMN api_version TEXT NOT NULL DEFAULT '';
-```
-
-Existing rows will have empty `api_version` until their next `Apply` call repopulates it.
-Rows with empty `api_version` that receive a `delete` change will fail at `schema.ParseGroupVersion("")`.
-
----
-
-## Usage Example
-
-```go
-db  := // *gorm.DB (PostgreSQL)
-k8s := // dynamic.Interface built from rest.Config
-
-api := &ksync.API{DB: db}
-
-// enqueue an apply
-_ = api.Apply(ctx, resourceID, json.RawMessage(`{
-    "apiVersion": "apps/v1",
-    "kind": "Deployment",
-    "metadata": {"namespace": "default", "name": "my-app"}
-}`))
-
-// start syncer (blocking, cancel ctx to stop)
-syncer := &ksync.Syncer{
-    Cluster:      "prod",
-    IntervalSync: 5 * time.Second,
-    DB:           db,
-    K8s:          k8s,
-}
-syncer.Run(ctx)
-```
+- **Naive pluralization** — `kind + "s"` breaks for irregular plurals (`Ingress` → `ingresss`). Fix: discovery client or lookup table.
+- **No cluster-scoped resource support** — `k8sDelete` always calls `.Namespace(ns)`. Pass `""` for cluster-scoped resources.
+- **Soft lock is advisory** — not checked before processing; overwritten on next poll after crash.
+- **Batch size fixed at 100** — hardcoded in SQL. Make `Syncer.BatchSize` configurable if needed.
+- **Sequential processing** — one change at a time. Add a worker pool for throughput.
+- **PostgreSQL-specific** — uses `DISTINCT ON` and `ILIKE`.
