@@ -169,6 +169,8 @@ ksync/
 | `last_sync_error` | cleared on success, set on k8s error |
 | `deleted_at` | soft-delete |
 
+**Unique constraint:** `(cluster, api_version, kind, namespace, name)` is unique where `deleted_at IS NULL` (partial index). The same identity can be re-created after deletion.
+
 ### `ChangeCustomResource` → table `ksync_change_custom_resources`
 
 Append-only log. Rows are deleted after successful sync.
