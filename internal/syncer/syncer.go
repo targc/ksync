@@ -11,8 +11,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/targc/ktrack"
 	ksync "github.com/targc/ksync/pkg"
+	"github.com/targc/ktrack"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -253,18 +253,29 @@ func (s *Syncer) runTracker(ctx context.Context) error {
 		mappings[m.Kind][m.Phase] = m.Status
 	}
 
+	labels := map[string]string{"ksync/tracking": "true"}
+
 	items := make([]ktrack.TrackItem, 0, len(gvrs))
 	for _, g := range gvrs {
 		apiGroup := ""
 		if parts := strings.SplitN(g.APIVersion, "/", 2); len(parts) == 2 {
 			apiGroup = parts[0]
 		}
+
 		items = append(items, ktrack.TrackItem{
 			APIGroup:  apiGroup,
 			Kind:      g.Kind,
 			Namespace: g.Namespace,
-			Labels:    map[string]string{"ksync/tracking": "true"},
+			Labels:    labels,
 		})
+
+		slog.Info(
+			"watching on > ",
+			"api_group", apiGroup,
+			"kind", g.Kind,
+			"ns", g.Namespace,
+			"labels", labels,
+		)
 	}
 
 	if len(items) == 0 {
@@ -282,6 +293,16 @@ func (s *Syncer) runTracker(ctx context.Context) error {
 	var buf []statusItem
 
 	tracker.Run(trackCtx, func(res ktrack.Resource) error { //nolint:errcheck
+
+		slog.Info(
+			"track polled > ",
+			"api_group", res.APIGroup,
+			"kind", res.Kind,
+			"ns", res.Namespace,
+			"labels", res.Labels,
+			"name", res.Name,
+		)
+
 		id := res.Labels["ksync/id"]
 		if id == "" {
 			return nil
