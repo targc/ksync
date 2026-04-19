@@ -36,7 +36,7 @@ func main() {
 		interval = d
 	}
 
-	k8s, mapper, err := buildK8sClient()
+	k8sCfg, k8s, mapper, err := buildK8sClient()
 	if err != nil {
 		log.Fatalf("failed to build k8s client: %v", err)
 	}
@@ -47,6 +47,7 @@ func main() {
 		IntervalSync: interval,
 		K8s:          k8s,
 		Mapper:       mapper,
+		K8sConfig:    k8sCfg,
 	}
 
 	if err := syncer.Run(context.Background()); err != nil {
@@ -54,7 +55,7 @@ func main() {
 	}
 }
 
-func buildK8sClient() (dynamic.Interface, apimeta.RESTMapper, error) {
+func buildK8sClient() (*rest.Config, dynamic.Interface, apimeta.RESTMapper, error) {
 	var cfg *rest.Config
 	var err error
 
@@ -65,19 +66,19 @@ func buildK8sClient() (dynamic.Interface, apimeta.RESTMapper, error) {
 	}
 
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 
 	dynamicClient, err := dynamic.NewForConfig(cfg)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 
 	dc, err := discovery.NewDiscoveryClientForConfig(cfg)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 
 	mapper := restmapper.NewDeferredDiscoveryRESTMapper(memory.NewMemCacheClient(dc))
-	return dynamicClient, mapper, nil
+	return cfg, dynamicClient, mapper, nil
 }

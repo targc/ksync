@@ -62,3 +62,21 @@ type ChangeCustomResource struct {
 }
 
 func (ChangeCustomResource) TableName() string { return "ksync_change_custom_resources" }
+
+type CustomResourceStatus struct {
+	CustomResourceID uuid.UUID `gorm:"type:uuid;primaryKey"`
+	Status           string
+	UpdatedAt        time.Time
+}
+
+func (CustomResourceStatus) TableName() string { return "ksync_custom_resource_statuses" }
+
+type PhaseMapping struct {
+	ID      uuid.UUID `gorm:"type:uuid;primaryKey"`
+	Cluster string
+	Kind    string
+	Phase   string
+	Status  string
+}
+
+func (PhaseMapping) TableName() string { return "ksync_phase_mappings" }

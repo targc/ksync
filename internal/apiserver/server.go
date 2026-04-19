@@ -27,6 +27,11 @@ func (s *Server) SetupRoutes(app *fiber.App) {
 	api.Post("/changes/:id/syncing", s.setSyncing)
 	api.Post("/changes/:id/success", s.setSuccess)
 	api.Post("/changes/:id/error", s.setError)
+
+	resources := api.Group("/resources")
+	resources.Get("/gvrs", s.listGVRs)
+	resources.Get("/phase-mappings", s.listPhaseMappings)
+	resources.Post("/status", s.bulkUpdateStatus)
 }
 
 func (s *Server) authMiddleware() fiber.Handler {
