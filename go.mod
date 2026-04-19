@@ -41,7 +41,7 @@ require (
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
 	github.com/philhofer/fwd v1.2.0 // indirect
 	github.com/spf13/pflag v1.0.9 // indirect
-	github.com/targc/ktrack v0.0.0-20260419075517-0b5ae1e9f8b6 // indirect
+	github.com/targc/ktrack v1.0.0
 	github.com/tinylib/msgp v1.6.3 // indirect
 	github.com/valyala/bytebufferpool v1.0.0 // indirect
 	github.com/valyala/fasthttp v1.69.0 // indirect
