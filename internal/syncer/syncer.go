@@ -247,10 +247,14 @@ func (s *Syncer) runTracker(ctx context.Context) error {
 
 	mappings := make(map[string]map[string]string)
 	for _, m := range rawMappings {
-		if mappings[m.Kind] == nil {
-			mappings[m.Kind] = make(map[string]string)
+		k := strings.ToLower(m.Kind)
+		p := strings.ToLower(m.Phase)
+
+		if mappings[k] == nil {
+			mappings[k] = make(map[string]string)
 		}
-		mappings[m.Kind][m.Phase] = m.Status
+
+		mappings[k][p] = m.Status
 	}
 
 	labels := map[string]string{"ksync/tracking": "true"}
@@ -327,8 +331,8 @@ func (s *Syncer) runTracker(ctx context.Context) error {
 }
 
 func mapPhaseStatus(kind, phase string, mappings map[string]map[string]string) string {
-	if m, ok := mappings[kind]; ok {
-		if s, ok := m[phase]; ok {
+	if m, ok := mappings[strings.ToLower(kind)]; ok {
+		if s, ok := m[strings.ToLower(phase)]; ok {
 			return s
 		}
 	}
