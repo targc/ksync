@@ -6,9 +6,10 @@ import (
 )
 
 type phaseMappingItem struct {
-	Kind   string `json:"kind"`
-	Phase  string `json:"phase"`
-	Status string `json:"status"`
+	APIVersion string `json:"api_version"`
+	Kind       string `json:"kind"`
+	Phase      string `json:"phase"`
+	Status     string `json:"status"`
 }
 
 func (s *Server) listPhaseMappings(c fiber.Ctx) error {
@@ -26,7 +27,7 @@ func (s *Server) listPhaseMappings(c fiber.Ctx) error {
 
 	result := make([]phaseMappingItem, len(mappings))
 	for i, m := range mappings {
-		result[i] = phaseMappingItem{Kind: m.Kind, Phase: m.Phase, Status: m.Status}
+		result[i] = phaseMappingItem{APIVersion: m.APIVersion, Kind: m.Kind, Phase: m.Phase, Status: m.Status}
 	}
 
 	return c.JSON(result)

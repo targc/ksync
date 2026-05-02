@@ -210,9 +210,10 @@ type trackGVR struct {
 }
 
 type trackPhaseMapping struct {
-	Kind   string `json:"kind"`
-	Phase  string `json:"phase"`
-	Status string `json:"status"`
+	APIVersion string `json:"api_version"`
+	Kind       string `json:"kind"`
+	Phase      string `json:"phase"`
+	Status     string `json:"status"`
 }
 
 type statusItem struct {
@@ -247,7 +248,14 @@ func (s *Syncer) runTracker(ctx context.Context) error {
 
 	mappings := make(map[string]map[string]string)
 	for _, m := range rawMappings {
-		k := strings.ToLower(m.Kind)
+		// extract api_group from api_version (e.g. "apps/v1" → "apps", "v1" → "")
+		apiGroup := m.APIVersion
+		if parts := strings.SplitN(m.APIVersion, "/", 2); len(parts) == 2 {
+			apiGroup = parts[0]
+		} else {
+			apiGroup = ""
+		}
+		k := strings.ToLower(apiGroup) + "/" + strings.ToLower(m.Kind)
 		p := strings.ToLower(m.Phase)
 
 		if mappings[k] == nil {
@@ -312,7 +320,7 @@ func (s *Syncer) runTracker(ctx context.Context) error {
 			return nil
 		}
 		phase, _ := res.Status["phase"].(string)
-		buf = append(buf, statusItem{ID: id, Status: mapPhaseStatus(res.Kind, phase, mappings)})
+		buf = append(buf, statusItem{ID: id, Status: mapPhaseStatus(res.APIGroup, res.Kind, phase, mappings)})
 		return nil
 	})
 
@@ -330,8 +338,16 @@ func (s *Syncer) runTracker(ctx context.Context) error {
 	return nil
 }
 
-func mapPhaseStatus(kind, phase string, mappings map[string]map[string]string) string {
-	if m, ok := mappings[strings.ToLower(kind)]; ok {
+func mapPhaseStatus(apiGroup, kind, phase string, mappings map[string]map[string]string) string {
+	key := strings.ToLower(apiGroup) + "/" + strings.ToLower(kind)
+	if m, ok := mappings[key]; ok {
+		if s, ok := m[strings.ToLower(phase)]; ok {
+			return s
+		}
+	}
+	// fallback: wildcard api_version (empty string)
+	wildcard := "/" + strings.ToLower(kind)
+	if m, ok := mappings[wildcard]; ok {
 		if s, ok := m[strings.ToLower(phase)]; ok {
 			return s
 		}

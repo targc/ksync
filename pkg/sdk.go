@@ -61,6 +61,20 @@ func (a *SDK) List(ctx context.Context, filter ListFilter, page, limit int64, de
 	return total, nil
 }
 
+func (a *SDK) GetStatus(ctx context.Context, id uuid.UUID) (*CustomResourceStatus, error) {
+	var s CustomResourceStatus
+	err := a.DB.
+		WithContext(ctx).
+		First(&s, "custom_resource_id = ?", id).
+		Error
+
+	if err != nil {
+		return nil, fmt.Errorf("failed to get resource status: %w", err)
+	}
+
+	return &s, nil
+}
+
 func (a *SDK) Get(ctx context.Context, id uuid.UUID, dest *CustomResource) error {
 	err := a.DB.
 		WithContext(ctx).

@@ -72,11 +72,12 @@ type CustomResourceStatus struct {
 func (CustomResourceStatus) TableName() string { return "ksync_custom_resource_statuses" }
 
 type PhaseMapping struct {
-	ID      uuid.UUID `gorm:"type:uuid;primaryKey"`
-	Cluster string
-	Kind    string
-	Phase   string
-	Status  string
+	ID         uuid.UUID `gorm:"type:uuid;primaryKey"`
+	Cluster    string
+	APIVersion string
+	Kind       string
+	Phase      string
+	Status     string
 }
 
 func (PhaseMapping) TableName() string { return "ksync_phase_mappings" }
